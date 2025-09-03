@@ -1,0 +1,23 @@
+
+# Git
+.git
+.gitignore
+
+# Docker
+.dockerignore
+Dockerfile
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local database file
+parking.db
+
+# Virtual environment
+venv/
+.venv/
+
+# IDE / Editor specific
+.idea/
+.vscode/

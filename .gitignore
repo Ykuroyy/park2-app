@@ -1,0 +1,18 @@
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local database file
+parking.db
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE / Editor specific
+.idea/
+.vscode/
