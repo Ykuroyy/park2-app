@@ -44,23 +44,13 @@ class ParkingLog(Base):
     check_in = Column(DateTime, default=datetime.datetime.utcnow)
     check_out = Column(DateTime, nullable=True)
 
-# Create the database tables
-Base.metadata.create_all(bind=engine)
-
-# --- Pydantic Models ---
-class CheckInRequest(BaseModel):
-    license_plate: str
-
-class ParkingLogResponse(BaseModel):
-    id: int
-    license_plate: str
-    check_in: datetime.datetime
-
-    class Config:
-        from_attributes = True
-
 # --- FastAPI App Initialization ---
 app = FastAPI(title="Park2 App")
+
+@app.on_event("startup")
+def on_startup():
+    # Create the database tables
+    Base.metadata.create_all(bind=engine)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
