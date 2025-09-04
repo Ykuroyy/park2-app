@@ -16,6 +16,14 @@ from pydantic import BaseModel
 import io
 import csv
 
+# Google Cloud Vision import
+try:
+    from google.cloud import vision
+    VISION_AVAILABLE = True
+except ImportError:
+    VISION_AVAILABLE = False
+    print("Google Cloud Vision not available, using Tesseract only")
+
 # --- Configuration ---
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
@@ -117,8 +125,37 @@ async def ocr_from_image(file: UploadFile = File(...)):
                 text = text.replace(wrong, right)
             return text
         
+        # Google Cloud Vision OCR function
+        def try_google_vision_ocr(image_content):
+            if not VISION_AVAILABLE:
+                return []
+            
+            try:
+                client = vision.ImageAnnotatorClient()
+                image = vision.Image(content=image_content)
+                response = client.text_detection(image=image)
+                texts = response.text_annotations
+                
+                results = []
+                for text in texts:
+                    if text.description and text.description.strip():
+                        results.append(text.description.strip())
+                        print(f"Google Vision OCR: '{text.description.strip()}'")
+                
+                if response.error.message:
+                    print(f"Google Vision API error: {response.error.message}")
+                
+                return results
+            except Exception as e:
+                print(f"Google Vision OCR error: {e}")
+                return []
+        
         # Debug: Save processed image for analysis
         debug_info = []
+        
+        # Try Google Cloud Vision first (most accurate)
+        google_results = try_google_vision_ocr(contents)
+        results = google_results.copy()
         
         # Multiple preprocessing methods for better success rate
         processed_images = []
@@ -139,8 +176,8 @@ async def ocr_from_image(file: UploadFile = File(...)):
         morph = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
         processed_images.append(("morph", morph))
         
-        # Try OCR on all processed images
-        results = []
+        # Try Tesseract OCR on all processed images (in addition to Google Vision)
+        tesseract_results = []
         
         for img_name, proc_img in processed_images:
             # Multiple OCR configurations
@@ -159,13 +196,18 @@ async def ocr_from_image(file: UploadFile = File(...)):
                     if raw_text and raw_text.strip():
                         cleaned_text = raw_text.strip()
                         corrected_text = fix_common_mistakes(cleaned_text)
-                        results.append(corrected_text)
-                        debug_info.append(f"{img_name}_{config_name}: '{cleaned_text}' -> '{corrected_text}'")
-                        print(f"OCR result ({img_name}_{config_name}): '{cleaned_text}' -> '{corrected_text}'")
+                        tesseract_results.append(corrected_text)
+                        debug_info.append(f"Tesseract {img_name}_{config_name}: '{cleaned_text}' -> '{corrected_text}'")
+                        print(f"Tesseract OCR ({img_name}_{config_name}): '{cleaned_text}' -> '{corrected_text}'")
                 except Exception as e:
-                    debug_info.append(f"{img_name}_{config_name}: ERROR - {str(e)}")
+                    debug_info.append(f"Tesseract {img_name}_{config_name}: ERROR - {str(e)}")
                     continue
         
+        # Combine all results (Google Vision + Tesseract)
+        results.extend(tesseract_results)
+        
+        print(f"Google Vision results: {len(google_results)}")
+        print(f"Tesseract results: {len(tesseract_results)}")
         print(f"Total OCR results: {len(results)}")
         print(f"All OCR results: {results}")
         
@@ -216,8 +258,9 @@ async def ocr_from_image(file: UploadFile = File(...)):
                 else:
                     continue
                 
-                # Validate result
-                if re.match(r'\d{1,2}-\d{1,2}', formatted) and formatted not in ['0-00', '00-0']:
+                # Validate result - exclude invalid patterns
+                invalid_patterns = ['0-00', '00-0', '00-00', '0-0']
+                if re.match(r'\d{1,2}-\d{1,2}', formatted) and formatted not in invalid_patterns:
                     formatted_numbers.append(formatted)
             
             print(f"Formatted numbers: {formatted_numbers}")

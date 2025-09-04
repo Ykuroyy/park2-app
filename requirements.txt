@@ -9,3 +9,4 @@ aiofiles
 psycopg2-binary
 numpy
 Pillow
+google-cloud-vision
