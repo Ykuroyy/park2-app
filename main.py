@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 import io
 import csv
-from ocr_new import ultra_high_precision_ocr
+from ocr_fast import fast_high_precision_ocr
 
 # --- Configuration ---
 # DATABASE_URL will be provided by Railway's environment variables
@@ -50,14 +50,8 @@ if os.path.exists('/opt/homebrew/bin/tesseract'):
 # For Railway/Debian, the path is usually /usr/bin/tesseract, which is in the PATH
 # so we don't need to set it explicitly if the Docker build is correct.
 
-# Initialize EasyOCR reader (supports Japanese and English)
-try:
-    # Initialize with Japanese and English support
-    easyocr_reader = easyocr.Reader(['ja', 'en'], gpu=False)  # Use CPU for Railway compatibility
-    print("EasyOCR initialized successfully")
-except Exception as e:
-    print(f"EasyOCR initialization failed: {e}")
-    easyocr_reader = None
+# EasyOCR will be initialized lazily when first needed to avoid startup delays
+easyocr_reader = None
 
 # --- Database Model ---
 class ParkingLog(Base):
@@ -102,7 +96,7 @@ async def ocr_from_image(file: UploadFile = File(...)):
     contents = await file.read()
     
     try:
-        result = await ultra_high_precision_ocr(contents)
+        result = await fast_high_precision_ocr(contents)
         
         # Handle errors
         if "error" in result:
