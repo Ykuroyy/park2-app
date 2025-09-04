@@ -96,17 +96,47 @@ async def ocr_from_image(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Invalid image file.")
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # Apply adaptive thresholding for better results on varied lighting
-    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    
+    # Enhanced preprocessing for better number recognition
+    # 1. Apply bilateral filter to reduce noise while keeping edges sharp
+    denoised = cv2.bilateralFilter(gray, 11, 17, 17)
+    
+    # 2. Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) for better contrast
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    enhanced = clahe.apply(denoised)
+    
+    # 3. Apply morphological operations to clean up the image
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
+    morph = cv2.morphologyEx(enhanced, cv2.MORPH_CLOSE, kernel)
+    
+    # 4. Apply Otsu's thresholding for better binarization
+    _, thresh = cv2.threshold(morph, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     try:
-        custom_config = r'--oem 3 --psm 6'
-        text = pytesseract.image_to_string(thresh, config=custom_config, lang='eng') # Assuming English characters
-        cleaned_text = "".join(filter(str.isalnum, text)).upper()
-        if not cleaned_text:
-             # If cleaning removes everything, try without thresholding
-            text = pytesseract.image_to_string(gray, config=custom_config, lang='eng')
-            cleaned_text = "".join(filter(str.isalnum, text)).upper()
+        # Improved Tesseract configuration for number recognition
+        # PSM 7: Treat image as single text line (good for license plates)
+        # Whitelist only numbers and common license plate characters
+        custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789'
+        
+        # Try multiple preprocessing approaches
+        text = pytesseract.image_to_string(thresh, config=custom_config)
+        cleaned_text = "".join(filter(str.isdigit, text))
+        
+        if len(cleaned_text) < 4:
+            # Try with inverted image if first attempt gives poor results
+            thresh_inv = cv2.bitwise_not(thresh)
+            text = pytesseract.image_to_string(thresh_inv, config=custom_config)
+            cleaned_text_inv = "".join(filter(str.isdigit, text))
+            if len(cleaned_text_inv) > len(cleaned_text):
+                cleaned_text = cleaned_text_inv
+        
+        if len(cleaned_text) < 4:
+            # Fallback: try with less strict config
+            custom_config_fallback = r'--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789-'
+            text = pytesseract.image_to_string(enhanced, config=custom_config_fallback)
+            cleaned_text_fallback = "".join(filter(str.isdigit, text))
+            if len(cleaned_text_fallback) > len(cleaned_text):
+                cleaned_text = cleaned_text_fallback
 
     except pytesseract.TesseractNotFoundError:
         raise HTTPException(status_code=500, detail="Tesseract is not installed or not in your PATH.")
