@@ -7,3 +7,5 @@ Jinja2
 SQLAlchemy
 aiofiles
 psycopg2-binary
+numpy
+Pillow
