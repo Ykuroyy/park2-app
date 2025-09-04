@@ -63,9 +63,26 @@ document.addEventListener('DOMContentLoaded', function () {
             if (result.license_plate && result.confidence !== 'failed') {
                 licensePlateInput.value = result.license_plate;
                 
+                // Display full license plate information if available
+                let plateInfo = result.license_plate;
+                if (result.plate_parts) {
+                    const parts = result.plate_parts;
+                    let fullPlate = '';
+                    if (parts.area) fullPlate += parts.area + ' ';
+                    if (parts.classification) fullPlate += parts.classification + ' ';
+                    if (parts.hiragana) fullPlate += parts.hiragana + ' ';
+                    if (parts.number) fullPlate += parts.number;
+                    
+                    if (fullPlate.trim()) {
+                        plateInfo = fullPlate.trim();
+                        // Update the input with full information
+                        licensePlateInput.value = plateInfo;
+                    }
+                }
+                
                 // Show confidence level and confirm if low
                 if (result.confidence === 'low') {
-                    if (confirm(`認識結果: ${result.license_plate}\nこの番号で正しいですか？\n（違う場合は「キャンセル」を押して手動で修正してください）`)) {
+                    if (confirm(`認識結果: ${plateInfo}\nこの情報で正しいですか？\n（違う場合は「キャンセル」を押して手動で修正してください）`)) {
                         // Auto submit check-in
                         checkinForm.dispatchEvent(new Event('submit'));
                     } else {
@@ -75,8 +92,12 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                 } else if (result.confidence === 'high') {
                     // High confidence - show success and auto submit
-                    showSuccess(`認識成功: ${result.license_plate}`);
+                    showSuccess(`認識成功: ${plateInfo}`);
                     checkinForm.dispatchEvent(new Event('submit'));
+                } else if (result.confidence === 'medium') {
+                    // Medium confidence - show result and ask for confirmation
+                    showSuccess(`認識結果: ${plateInfo} (中程度の信頼度)`);
+                    licensePlateInput.focus();
                 }
             } else {
                 // OCR failed - prompt for manual input
@@ -299,9 +320,26 @@ document.addEventListener('DOMContentLoaded', function () {
             if (result.license_plate && result.confidence !== 'failed') {
                 licensePlateInput.value = result.license_plate;
                 
+                // Display full license plate information if available
+                let plateInfo = result.license_plate;
+                if (result.plate_parts) {
+                    const parts = result.plate_parts;
+                    let fullPlate = '';
+                    if (parts.area) fullPlate += parts.area + ' ';
+                    if (parts.classification) fullPlate += parts.classification + ' ';
+                    if (parts.hiragana) fullPlate += parts.hiragana + ' ';
+                    if (parts.number) fullPlate += parts.number;
+                    
+                    if (fullPlate.trim()) {
+                        plateInfo = fullPlate.trim();
+                        // Update the input with full information
+                        licensePlateInput.value = plateInfo;
+                    }
+                }
+                
                 // Show confidence level and confirm if low
                 if (result.confidence === 'low') {
-                    if (confirm(`認識結果: ${result.license_plate}\nこの番号で正しいですか？\n（違う場合は「キャンセル」を押して手動で修正してください）`)) {
+                    if (confirm(`認識結果: ${plateInfo}\nこの情報で正しいですか？\n（違う場合は「キャンセル」を押して手動で修正してください）`)) {
                         // Auto submit check-in
                         checkinForm.dispatchEvent(new Event('submit'));
                     } else {
@@ -311,8 +349,12 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                 } else if (result.confidence === 'high') {
                     // High confidence - show success and auto submit
-                    showSuccess(`認識成功: ${result.license_plate}`);
+                    showSuccess(`認識成功: ${plateInfo}`);
                     checkinForm.dispatchEvent(new Event('submit'));
+                } else if (result.confidence === 'medium') {
+                    // Medium confidence - show result and ask for confirmation
+                    showSuccess(`認識結果: ${plateInfo} (中程度の信頼度)`);
+                    licensePlateInput.focus();
                 }
                 
                 // Stop camera after successful recognition

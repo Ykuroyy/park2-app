@@ -212,20 +212,31 @@ async def ocr_from_image(file: UploadFile = File(...)):
                 
                 for psm in psm_modes:
                     try:
-                        # OCR with number-only whitelist
-                        config = f'--oem 3 --psm {psm} -c tessedit_char_whitelist=0123456789'
+                        # OCR with number and hyphen whitelist for license plates
+                        config = f'--oem 3 --psm {psm} -c tessedit_char_whitelist=0123456789-'
                         text = pytesseract.image_to_string(test_img, config=config)
-                        numbers = "".join(filter(str.isdigit, text))
+                        # Keep numbers and hyphens
+                        numbers = "".join(c for c in text if c.isdigit() or c == '-')
                         
-                        # Look for 4-digit pattern
-                        four_digit_matches = re.findall(r'\d{4}', numbers)
+                        # Look for license plate patterns (XX-XX or XXXX)
+                        plate_patterns = [
+                            r'\d{2}-\d{2}',  # XX-XX format
+                            r'\d{4}',        # XXXX format
+                        ]
                         
-                        if four_digit_matches:
-                            for match in four_digit_matches:
+                        for pattern in plate_patterns:
+                            matches = re.findall(pattern, numbers)
+                            for match in matches:
+                                # Convert XXXX to XX-XX if it looks like a plate
+                                if len(match) == 4 and '-' not in match:
+                                    formatted_match = f"{match[:2]}-{match[2:]}"
+                                else:
+                                    formatted_match = match
+                                    
                                 # Validate that it looks like a license plate number
-                                if match != "0000" and match != "1111":  # Filter out obvious errors
-                                    print(f"Found: {match} using {method_name}, PSM={psm}, inverted={invert}")
-                                    ocr_results.append(match)
+                                if match not in ["0000", "1111", "00-00", "11-11"]:
+                                    print(f"Found: {formatted_match} using {method_name}, PSM={psm}, inverted={invert}")
+                                    ocr_results.append(formatted_match)
                                     
                                     # If we find a consistent result multiple times, it's likely correct
                                     if ocr_results.count(match) > best_confidence:
@@ -247,10 +258,99 @@ async def ocr_from_image(file: UploadFile = File(...)):
     except:
         pass
     
-    # Find the most common result (voting system)
+    # Character correction for common OCR mistakes
+    def correct_license_plate(text):
+        corrections = {
+            '4': '1',  # 4 often misread as 1 in license plates
+            'B': '8',  # B might be 8
+            'S': '8',  # S might be 8
+            'O': '0',  # O might be 0
+            'I': '1',  # I might be 1
+            'l': '1',  # lowercase l might be 1
+        }
+        corrected = text
+        for wrong, right in corrections.items():
+            corrected = corrected.replace(wrong, right)
+        return corrected
+    
+    # Extract full license plate information
+    def extract_full_plate_info():
+        full_info = {
+            'area': '',
+            'classification': '',
+            'hiragana': '',
+            'number': '',
+            'full_text': ''
+        }
+        
+        try:
+            # Try to get full text with Japanese support
+            configs = [
+                '--oem 3 --psm 6',
+                '--oem 3 --psm 7',
+                '--oem 3 --psm 8',
+            ]
+            
+            for config in configs:
+                try:
+                    # Japanese + English
+                    full_text = pytesseract.image_to_string(gray, config=config, lang='jpn+eng')
+                    if full_text.strip():
+                        full_info['full_text'] = full_text.strip().replace('\n', ' ')
+                        break
+                except:
+                    # English only fallback
+                    try:
+                        full_text = pytesseract.image_to_string(gray, config=config, lang='eng')
+                        if full_text.strip():
+                            full_info['full_text'] = full_text.strip().replace('\n', ' ')
+                            break
+                    except:
+                        continue
+            
+            text = full_info['full_text']
+            
+            # Extract area (地名)
+            area_patterns = [
+                '東京', '大阪', '神戸', '横浜', '川崎', '千葉', '埼玉', '茨城', '栃木', '群馬',
+                '山梨', '長野', '新潟', '富山', '石川', '福井', '静岡', '愛知', '三重', '滋賀',
+                '京都', '兵庫', '奈良', '和歌山', '鳥取', '島根', '岡山', '広島', '山口',
+                '徳島', '香川', '愛媛', '高知', '福岡', '佐賀', '長崎', '熊本', '大分', '宮崎', '鹿児島', '沖縄'
+            ]
+            for area in area_patterns:
+                if area in text:
+                    full_info['area'] = area
+                    break
+            
+            # Extract classification (3桁数字)
+            class_match = re.search(r'(\d{3})', text)
+            if class_match:
+                full_info['classification'] = class_match.group(1)
+            
+            # Extract hiragana (ひらがな1文字)
+            hiragana_match = re.search(r'([あ-ゖ])', text)
+            if hiragana_match:
+                full_info['hiragana'] = hiragana_match.group(1)
+                
+        except Exception as e:
+            print(f"Full plate extraction error: {e}")
+        
+        return full_info
+    
+    # Get full plate information
+    full_plate = extract_full_plate_info()
+    
+    # Apply corrections and find best result
     from collections import Counter
     if ocr_results:
-        result_counts = Counter(ocr_results)
+        # Apply character corrections
+        corrected_results = []
+        for result in ocr_results:
+            original = result
+            corrected = correct_license_plate(result)
+            corrected_results.extend([original, corrected])
+        
+        result_counts = Counter(corrected_results)
         most_common = result_counts.most_common(1)[0]
         best_result = most_common[0]
         confidence_score = most_common[1]
@@ -268,9 +368,19 @@ async def ocr_from_image(file: UploadFile = File(...)):
         
         return {
             "license_plate": best_result,
-            "full_text": best_result,
+            "full_text": full_plate['full_text'] if full_plate['full_text'] else best_result,
             "confidence": confidence,
-            "debug_info": f"Found {len(ocr_results)} matches, best: {best_result} ({confidence_score} votes)"
+            "area": full_plate['area'],
+            "classification": full_plate['classification'], 
+            "hiragana": full_plate['hiragana'],
+            "number": best_result,
+            "debug_info": f"Found {len(ocr_results)} matches, corrected to: {best_result} ({confidence_score} votes)",
+            "plate_parts": {
+                "area": full_plate['area'],           # 地名 (例: 東京)
+                "classification": full_plate['classification'], # 分類 (例: 330)
+                "hiragana": full_plate['hiragana'],   # ひらがな (例: め)
+                "number": best_result                 # 番号 (例: 81-18)
+            }
         }
     else:
         # No results found
