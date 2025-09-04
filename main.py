@@ -15,9 +15,13 @@ import io
 import csv
 
 # --- Configuration ---
-DATABASE_URL = "sqlite:///./parking.db"
+# DATABASE_URL will be provided by Railway's environment variables
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is not set.")
+
 Base = declarative_base()
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # --- Tesseract Configuration ---
