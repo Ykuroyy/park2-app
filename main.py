@@ -27,6 +27,18 @@ if DATABASE_URL.startswith("postgres://"):
 
 Base = declarative_base()
 engine = create_engine(DATABASE_URL)
+
+# --- Pydantic Models ---
+class CheckInRequest(BaseModel):
+    license_plate: str
+
+class ParkingLogResponse(BaseModel):
+    id: int
+    license_plate: str
+    check_in: datetime.datetime
+
+    class Config:
+        from_attributes = True
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # --- Tesseract Configuration ---
