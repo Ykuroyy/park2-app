@@ -117,74 +117,147 @@ async def ocr_from_image(file: UploadFile = File(...)):
                 text = text.replace(wrong, right)
             return text
         
-        # Try only 3 most effective OCR methods (not 48!)
+        # Debug: Save processed image for analysis
+        debug_info = []
+        
+        # Multiple preprocessing methods for better success rate
+        processed_images = []
+        
+        # Original enhanced
+        processed_images.append(("enhanced", enhanced))
+        
+        # Binary threshold
+        _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        processed_images.append(("binary", binary))
+        
+        # Inverted binary
+        binary_inv = cv2.bitwise_not(binary)
+        processed_images.append(("binary_inv", binary_inv))
+        
+        # Morphological cleaning
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2,2))
+        morph = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        processed_images.append(("morph", morph))
+        
+        # Try OCR on all processed images
         results = []
         
-        # Method 1: Numbers only
-        try:
-            text1 = pytesseract.image_to_string(enhanced, config='--psm 8 -c tessedit_char_whitelist=0123456789-')
-            if text1.strip():
-                results.append(fix_common_mistakes(text1.strip()))
-        except: pass
+        for img_name, proc_img in processed_images:
+            # Multiple OCR configurations
+            configs = [
+                ('psm6', '--oem 3 --psm 6'),  # Uniform block
+                ('psm7', '--oem 3 --psm 7'),  # Single line
+                ('psm8', '--oem 3 --psm 8'),  # Single word  
+                ('psm8_nums', '--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789-'),
+                ('psm11', '--oem 3 --psm 11'), # Sparse text
+                ('psm13', '--oem 3 --psm 13'), # Raw line
+            ]
+            
+            for config_name, config in configs:
+                try:
+                    raw_text = pytesseract.image_to_string(proc_img, config=config)
+                    if raw_text and raw_text.strip():
+                        cleaned_text = raw_text.strip()
+                        corrected_text = fix_common_mistakes(cleaned_text)
+                        results.append(corrected_text)
+                        debug_info.append(f"{img_name}_{config_name}: '{cleaned_text}' -> '{corrected_text}'")
+                        print(f"OCR result ({img_name}_{config_name}): '{cleaned_text}' -> '{corrected_text}'")
+                except Exception as e:
+                    debug_info.append(f"{img_name}_{config_name}: ERROR - {str(e)}")
+                    continue
         
-        # Method 2: General text
-        try:
-            text2 = pytesseract.image_to_string(enhanced, config='--psm 7')
-            if text2.strip():
-                results.append(fix_common_mistakes(text2.strip()))
-        except: pass
+        print(f"Total OCR results: {len(results)}")
+        print(f"All OCR results: {results}")
         
-        # Method 3: Inverted image
-        try:
-            inverted = cv2.bitwise_not(enhanced)
-            text3 = pytesseract.image_to_string(inverted, config='--psm 8 -c tessedit_char_whitelist=0123456789-')
-            if text3.strip():
-                results.append(fix_common_mistakes(text3.strip()))
-        except: pass
-        
-        # Find numbers in results
+        # Enhanced number extraction with multiple patterns
         all_numbers = []
-        for text in results:
-            # Find 4-digit patterns
-            numbers = re.findall(r'\d{3,4}', text)
-            all_numbers.extend(numbers)
         
-        # Simple validation and formatting
+        for text in results:
+            # Multiple number patterns
+            patterns = [
+                r'\d{2}[-ー]\d{2}',        # XX-XX format
+                r'\d{4}',                  # XXXX format
+                r'\d{2}\s+\d{2}',         # XX XX with space
+                r'\d{1,2}[-ー]?\d{1,2}',  # Flexible format
+                r'\b\d+\b',               # Any digits surrounded by word boundaries
+            ]
+            
+            for pattern in patterns:
+                matches = re.findall(pattern, text)
+                for match in matches:
+                    # Clean and validate
+                    cleaned = re.sub(r'[^\d-]', '', match)
+                    if len(cleaned) >= 2:  # At least 2 digits
+                        all_numbers.append(cleaned)
+                        print(f"Found number '{cleaned}' from text '{text}' using pattern '{pattern}'")
+        
+        print(f"All extracted numbers: {all_numbers}")
+        
+        # Enhanced validation and formatting
         if all_numbers:
-            # Take the most common or first valid result
-            counter = Counter(all_numbers)
-            best_num = counter.most_common(1)[0][0]
+            # Process and format numbers
+            formatted_numbers = []
             
-            # Format as XX-XX
-            if len(best_num) == 4:
-                formatted = f"{best_num[:2]}-{best_num[2:]}"
-            elif len(best_num) == 3:
-                formatted = f"0{best_num[0]}-{best_num[1:]}"
-            else:
-                formatted = best_num
+            for num in all_numbers:
+                digits_only = re.sub(r'[^\d]', '', num)
+                
+                if len(digits_only) == 1:
+                    continue  # Skip single digits
+                elif len(digits_only) == 2:
+                    formatted = f"0{digits_only[0]}-{digits_only[1]}0"  # 2 digits -> 0X-Y0
+                elif len(digits_only) == 3:
+                    formatted = f"0{digits_only[0]}-{digits_only[1:]}"  # 3 digits -> 0X-YZ
+                elif len(digits_only) == 4:
+                    formatted = f"{digits_only[:2]}-{digits_only[2:]}"  # 4 digits -> XX-YY
+                elif len(digits_only) > 4:
+                    # Take first 4 digits
+                    first_four = digits_only[:4]
+                    formatted = f"{first_four[:2]}-{first_four[2:]}"
+                else:
+                    continue
+                
+                # Validate result
+                if re.match(r'\d{1,2}-\d{1,2}', formatted) and formatted not in ['0-00', '00-0']:
+                    formatted_numbers.append(formatted)
             
-            return {
-                "license_plate": formatted,
-                "full_text": formatted,
-                "confidence": "medium",
-                "area": "",
-                "classification": "",
-                "hiragana": "",
-                "number": formatted,
-                "plate_parts": {
+            print(f"Formatted numbers: {formatted_numbers}")
+            
+            if formatted_numbers:
+                # Use voting system
+                counter = Counter(formatted_numbers)
+                best_result = counter.most_common(1)[0]
+                best_number = best_result[0]
+                vote_count = best_result[1]
+                
+                confidence = "high" if vote_count >= 2 else "medium"
+                
+                print(f"Selected: {best_number} with {vote_count} votes")
+                
+                return {
+                    "license_plate": best_number,
+                    "full_text": best_number,
+                    "confidence": confidence,
+                    "debug_info": f"OCR attempts: {len(results)}, Numbers found: {len(all_numbers)}, Best: {best_number} ({vote_count} votes)",
                     "area": "",
                     "classification": "",
                     "hiragana": "",
-                    "number": formatted
+                    "number": best_number,
+                    "plate_parts": {
+                        "area": "",
+                        "classification": "",
+                        "hiragana": "",
+                        "number": best_number
+                    }
                 }
-            }
-        else:
-            return {
-                "license_plate": "",
-                "full_text": "認識できませんでした",
-                "confidence": "failed",
-                "message": "手動で入力してください。100台規模の駐車場では手動入力も効率的です。"
-            }
+        
+        print("No valid numbers found")
+        return {
+            "license_plate": "",
+            "full_text": "認識できませんでした",
+            "confidence": "failed",
+            "debug_info": f"OCR attempts: {len(results)}, Debug: {'; '.join(debug_info[:5])}",
+            "message": "数字が検出されませんでした。明るい場所で、ナンバープレート全体がはっきり見えるように撮影してください。"
+        }
             
     except Exception as e:
         print(f"OCR error: {e}")
