@@ -168,42 +168,129 @@ async def ocr_from_image(file: UploadFile = File(...)):
                 for invert in [False, True]:
                     test_img = cv2.bitwise_not(binary_img) if invert else binary_img
                     
-                    try:
-                        text = pytesseract.image_to_string(test_img, 
-                            config='--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789-')
-                        if text.strip():
-                            all_results.append({
-                                'text': text.strip(),
-                                'method': f"{method_name}_{binary_name}_inv{invert}"
-                            })
-                    except:
-                        continue
+                    # Multiple OCR configurations to catch different text layouts
+                    ocr_configs = [
+                        ('numbers_only', '--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789-'),
+                        ('single_line', '--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789-'),
+                        ('uniform_block', '--oem 3 --psm 6'),
+                        ('sparse_text', '--oem 3 --psm 11'),
+                        ('single_word', '--oem 3 --psm 8'),
+                        ('raw_line', '--oem 3 --psm 13'),
+                    ]
+                    
+                    for config_name, config in ocr_configs:
+                        try:
+                            text = pytesseract.image_to_string(test_img, config=config)
+                            if text.strip():
+                                all_results.append({
+                                    'text': text.strip(),
+                                    'method': f"{method_name}_{binary_name}_inv{invert}_{config_name}"
+                                })
+                        except Exception as e:
+                            print(f"OCR config {config_name} failed: {e}")
+                            continue
         
         # Enhanced OCR processing
         try:
             # Collect all detected numbers from different methods
             all_numbers = []
             
+            # Character correction for common OCR mistakes
+            def correct_ocr_text(text):
+                corrections = {
+                    'O': '0', 'o': '0',  # Letter O to number 0
+                    'I': '1', 'l': '1', '|': '1',  # Letters to number 1
+                    'S': '8', 's': '8',  # Letter S to number 8
+                    'B': '8',  # Letter B to number 8
+                    'Z': '2',  # Letter Z to number 2
+                    'G': '6',  # Letter G to number 6
+                    'D': '0',  # Letter D to number 0
+                    'T': '7',  # Letter T to number 7
+                    'A': '4',  # Letter A to number 4
+                    'E': '3',  # Letter E to number 3
+                }
+                corrected = text
+                for wrong, right in corrections.items():
+                    corrected = corrected.replace(wrong, right)
+                return corrected
+            
             for result in all_results:
                 text = result['text']
-                # Extract number patterns
-                numbers = re.findall(r'\d{4}|\d{2}-\d{2}', text)
-                for num in numbers:
-                    all_numbers.append(num)
-                    print(f"Found '{num}' using {result['method']}")
-            
-            # Choose the best result (most common or first valid)
-            if all_numbers:
-                # Use the most common result or first one
-                from collections import Counter
-                counter = Counter(all_numbers)
-                most_common = counter.most_common(1)[0]
-                best_number = most_common[0]
-                confidence_level = "high" if most_common[1] > 1 else "medium"
+                print(f"Raw OCR text: '{text}' from {result['method']}")
                 
-                # Format as XX-XX
-                if len(best_number) == 4:
-                    best_number = f"{best_number[:2]}-{best_number[2:]}"
+                # Apply character corrections
+                corrected_text = correct_ocr_text(text)
+                if corrected_text != text:
+                    print(f"After correction: '{corrected_text}'")
+                
+                # Extract number patterns with more flexible regex
+                patterns = [
+                    r'\d{2}[-ー]\d{2}',  # XX-XX or XX－XX (full-width dash)
+                    r'\d{4}',            # XXXX
+                    r'\d{2}\s+\d{2}',    # XX XX (with spaces)
+                    r'\d{1,2}[-ー]?\d{1,2}', # More flexible pattern
+                ]
+                
+                for pattern in patterns:
+                    numbers = re.findall(pattern, corrected_text)
+                    for num in numbers:
+                        # Clean up the number
+                        cleaned = re.sub(r'[^\d-]', '', num)
+                        if len(cleaned) >= 3:  # At least 3 digits
+                            all_numbers.append(cleaned)
+                            print(f"Found '{cleaned}' using {result['method']} with pattern {pattern}")
+                
+                # Also try to find any sequence of digits
+                digit_sequences = re.findall(r'\d+', corrected_text)
+                for seq in digit_sequences:
+                    if len(seq) >= 3:  # At least 3 digits
+                        all_numbers.append(seq)
+                        print(f"Found digit sequence '{seq}' from {result['method']}")
+            
+            print(f"All numbers found: {all_numbers}")
+            
+            # Choose the best result with improved validation
+            if all_numbers:
+                from collections import Counter
+                
+                # Clean and validate numbers
+                valid_numbers = []
+                for num in all_numbers:
+                    # Remove any non-digit characters except hyphen
+                    cleaned = re.sub(r'[^\d-]', '', num)
+                    
+                    # Convert various formats to standard XX-XX
+                    if len(cleaned) == 3:
+                        # XXX -> 0X-XX or XX-X
+                        if cleaned[0] == '0':
+                            formatted = f"0{cleaned[1]}-{cleaned[2]}0"  # Likely 0X-X0
+                        else:
+                            formatted = f"{cleaned[:2]}-{cleaned[2]}0"  # XX-X0
+                    elif len(cleaned) == 4:
+                        formatted = f"{cleaned[:2]}-{cleaned[2:]}"  # XXXX -> XX-XX
+                    elif len(cleaned) == 5 and '-' in cleaned:
+                        formatted = cleaned  # Already XX-XX format
+                    elif len(cleaned) >= 5:
+                        # Take first 4 digits
+                        digits_only = re.sub(r'[^\d]', '', cleaned)[:4]
+                        if len(digits_only) == 4:
+                            formatted = f"{digits_only[:2]}-{digits_only[2:]}"
+                        else:
+                            continue
+                    else:
+                        continue  # Skip invalid patterns
+                    
+                    # Validate the result looks like a license plate number
+                    if re.match(r'\d{2}-\d{2}', formatted) and formatted not in ['00-00', '11-11']:
+                        valid_numbers.append(formatted)
+                
+                print(f"Valid numbers after formatting: {valid_numbers}")
+                
+                if valid_numbers:
+                    counter = Counter(valid_numbers)
+                    most_common = counter.most_common(1)[0]
+                    best_number = most_common[0]
+                    confidence_level = "high" if most_common[1] >= 2 else "medium"
                     
                 return {
                     "license_plate": best_number,
