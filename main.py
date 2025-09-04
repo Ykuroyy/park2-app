@@ -1,6 +1,7 @@
 import os
 import datetime
 import pytesseract
+import easyocr
 from fastapi import FastAPI, File, UploadFile, Request, Depends, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
@@ -13,6 +14,7 @@ import cv2
 import numpy as np
 import io
 import csv
+from ocr_new import ultra_high_precision_ocr
 
 # --- Configuration ---
 # DATABASE_URL will be provided by Railway's environment variables
@@ -47,6 +49,15 @@ if os.path.exists('/opt/homebrew/bin/tesseract'):
     pytesseract.pytesseract.tesseract_cmd = '/opt/homebrew/bin/tesseract'
 # For Railway/Debian, the path is usually /usr/bin/tesseract, which is in the PATH
 # so we don't need to set it explicitly if the Docker build is correct.
+
+# Initialize EasyOCR reader (supports Japanese and English)
+try:
+    # Initialize with Japanese and English support
+    easyocr_reader = easyocr.Reader(['ja', 'en'], gpu=False)  # Use CPU for Railway compatibility
+    print("EasyOCR initialized successfully")
+except Exception as e:
+    print(f"EasyOCR initialization failed: {e}")
+    easyocr_reader = None
 
 # --- Database Model ---
 class ParkingLog(Base):
@@ -86,311 +97,22 @@ async def read_root(request: Request):
 @app.post("/upload-image/")
 async def ocr_from_image(file: UploadFile = File(...)):
     """
-    Enhanced OCR for Japanese license plates with multiple preprocessing techniques.
+    Ultra-high precision OCR using EasyOCR + advanced preprocessing for Japanese license plates.
     """
     contents = await file.read()
-    np_arr = np.frombuffer(contents, np.uint8)
-    img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
-    if img is None:
-        raise HTTPException(status_code=400, detail="Invalid image file.")
-
-    height, width = img.shape[:2]
     
-    # Auto-rotate if needed
-    if height > width * 1.5:
-        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
-        height, width = width, height
-    
-    # Scale up for better OCR
-    target_width = 1600  # Higher resolution for better accuracy
-    if width < target_width:
-        scale = target_width / width
-        new_width = int(width * scale)
-        new_height = int(height * scale)
-        img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
-    
-    # Convert to grayscale
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    
-    # List to store results from different preprocessing methods
-    ocr_results = []
-    
-    # Method 1: Advanced denoising and sharpening
-    def method1_preprocessing(gray_img):
-        # Bilateral filter for edge-preserving smoothing
-        smooth = cv2.bilateralFilter(gray_img, 15, 80, 80)
-        # Unsharp masking for enhancement
-        gaussian = cv2.GaussianBlur(smooth, (0, 0), 2.0)
-        sharpened = cv2.addWeighted(smooth, 2.0, gaussian, -1.0, 0)
-        # Adaptive threshold
-        binary = cv2.adaptiveThreshold(sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                      cv2.THRESH_BINARY, 21, 10)
-        return binary
-    
-    # Method 2: Morphological operations
-    def method2_preprocessing(gray_img):
-        # CLAHE for contrast
-        clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
-        enhanced = clahe.apply(gray_img)
-        # Otsu's thresholding
-        _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        # Morphological operations to clean up
-        kernel = np.ones((2,2), np.uint8)
-        cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel)
-        return cleaned
-    
-    # Method 3: Edge detection based
-    def method3_preprocessing(gray_img):
-        # Median blur to reduce noise
-        blurred = cv2.medianBlur(gray_img, 5)
-        # Canny edge detection
-        edges = cv2.Canny(blurred, 50, 150)
-        # Dilate edges to connect components
-        kernel = np.ones((2,2), np.uint8)
-        dilated = cv2.dilate(edges, kernel, iterations=1)
-        # Find contours and create mask
-        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        mask = np.zeros_like(gray_img)
-        cv2.drawContours(mask, contours, -1, 255, -1)
-        # Apply mask
-        result = cv2.bitwise_and(gray_img, mask)
-        _, binary = cv2.threshold(result, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        return binary
-    
-    # Method 4: Perspective correction for skewed images
-    def method4_preprocessing(gray_img):
-        # Simple deskewing
-        coords = np.column_stack(np.where(gray_img > 0))
-        if len(coords) > 0:
-            angle = cv2.minAreaRect(coords)[-1]
-            if angle < -45:
-                angle = 90 + angle
-            if abs(angle) > 0.5:
-                (h, w) = gray_img.shape[:2]
-                center = (w // 2, h // 2)
-                M = cv2.getRotationMatrix2D(center, angle, 1.0)
-                rotated = cv2.warpAffine(gray_img, M, (w, h), 
-                                        flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-            else:
-                rotated = gray_img
-        else:
-            rotated = gray_img
-        
-        # Apply threshold
-        _, binary = cv2.threshold(rotated, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        return binary
-    
-    import re
-    
-    # Try multiple preprocessing methods
-    preprocessing_methods = [
-        ("method1", method1_preprocessing),
-        ("method2", method2_preprocessing),
-        ("method3", method3_preprocessing),
-        ("method4", method4_preprocessing)
-    ]
-    
-    best_result = ""
-    best_confidence = 0
-    
-    for method_name, preprocess_func in preprocessing_methods:
-        try:
-            # Apply preprocessing
-            processed = preprocess_func(gray)
-            
-            # Try normal and inverted
-            for invert in [False, True]:
-                if invert:
-                    test_img = cv2.bitwise_not(processed)
-                else:
-                    test_img = processed
-                
-                # Multiple PSM modes for different text layouts
-                psm_modes = [6, 7, 8, 11, 13]
-                
-                for psm in psm_modes:
-                    try:
-                        # OCR with number and hyphen whitelist for license plates
-                        config = f'--oem 3 --psm {psm} -c tessedit_char_whitelist=0123456789-'
-                        text = pytesseract.image_to_string(test_img, config=config)
-                        # Keep numbers and hyphens
-                        numbers = "".join(c for c in text if c.isdigit() or c == '-')
-                        
-                        # Look for license plate patterns (XX-XX or XXXX)
-                        plate_patterns = [
-                            r'\d{2}-\d{2}',  # XX-XX format
-                            r'\d{4}',        # XXXX format
-                        ]
-                        
-                        for pattern in plate_patterns:
-                            matches = re.findall(pattern, numbers)
-                            for match in matches:
-                                # Convert XXXX to XX-XX if it looks like a plate
-                                if len(match) == 4 and '-' not in match:
-                                    formatted_match = f"{match[:2]}-{match[2:]}"
-                                else:
-                                    formatted_match = match
-                                    
-                                # Validate that it looks like a license plate number
-                                if match not in ["0000", "1111", "00-00", "11-11"]:
-                                    print(f"Found: {formatted_match} using {method_name}, PSM={psm}, inverted={invert}")
-                                    ocr_results.append(formatted_match)
-                                    
-                                    # If we find a consistent result multiple times, it's likely correct
-                                    if ocr_results.count(match) > best_confidence:
-                                        best_result = match
-                                        best_confidence = ocr_results.count(match)
-                    except:
-                        continue
-        except Exception as e:
-            print(f"Error in {method_name}: {str(e)}")
-            continue
-    
-    # Also try with less strict configuration for partial matches
     try:
-        config_partial = '--oem 3 --psm 6'
-        text_full = pytesseract.image_to_string(gray, config=config_partial)
-        # Extract any 4-digit sequences
-        partial_matches = re.findall(r'\d{4}', text_full)
-        ocr_results.extend(partial_matches)
-    except:
-        pass
-    
-    # Character correction for common OCR mistakes
-    def correct_license_plate(text):
-        corrections = {
-            '4': '1',  # 4 often misread as 1 in license plates
-            'B': '8',  # B might be 8
-            'S': '8',  # S might be 8
-            'O': '0',  # O might be 0
-            'I': '1',  # I might be 1
-            'l': '1',  # lowercase l might be 1
-        }
-        corrected = text
-        for wrong, right in corrections.items():
-            corrected = corrected.replace(wrong, right)
-        return corrected
-    
-    # Extract full license plate information
-    def extract_full_plate_info():
-        full_info = {
-            'area': '',
-            'classification': '',
-            'hiragana': '',
-            'number': '',
-            'full_text': ''
-        }
+        result = await ultra_high_precision_ocr(contents)
         
-        try:
-            # Try to get full text with Japanese support
-            configs = [
-                '--oem 3 --psm 6',
-                '--oem 3 --psm 7',
-                '--oem 3 --psm 8',
-            ]
-            
-            for config in configs:
-                try:
-                    # Japanese + English
-                    full_text = pytesseract.image_to_string(gray, config=config, lang='jpn+eng')
-                    if full_text.strip():
-                        full_info['full_text'] = full_text.strip().replace('\n', ' ')
-                        break
-                except:
-                    # English only fallback
-                    try:
-                        full_text = pytesseract.image_to_string(gray, config=config, lang='eng')
-                        if full_text.strip():
-                            full_info['full_text'] = full_text.strip().replace('\n', ' ')
-                            break
-                    except:
-                        continue
-            
-            text = full_info['full_text']
-            
-            # Extract area (地名)
-            area_patterns = [
-                '東京', '大阪', '神戸', '横浜', '川崎', '千葉', '埼玉', '茨城', '栃木', '群馬',
-                '山梨', '長野', '新潟', '富山', '石川', '福井', '静岡', '愛知', '三重', '滋賀',
-                '京都', '兵庫', '奈良', '和歌山', '鳥取', '島根', '岡山', '広島', '山口',
-                '徳島', '香川', '愛媛', '高知', '福岡', '佐賀', '長崎', '熊本', '大分', '宮崎', '鹿児島', '沖縄'
-            ]
-            for area in area_patterns:
-                if area in text:
-                    full_info['area'] = area
-                    break
-            
-            # Extract classification (3桁数字)
-            class_match = re.search(r'(\d{3})', text)
-            if class_match:
-                full_info['classification'] = class_match.group(1)
-            
-            # Extract hiragana (ひらがな1文字)
-            hiragana_match = re.search(r'([あ-ゖ])', text)
-            if hiragana_match:
-                full_info['hiragana'] = hiragana_match.group(1)
-                
-        except Exception as e:
-            print(f"Full plate extraction error: {e}")
+        # Handle errors
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
         
-        return full_info
-    
-    # Get full plate information
-    full_plate = extract_full_plate_info()
-    
-    # Apply corrections and find best result
-    from collections import Counter
-    if ocr_results:
-        # Apply character corrections
-        corrected_results = []
-        for result in ocr_results:
-            original = result
-            corrected = correct_license_plate(result)
-            corrected_results.extend([original, corrected])
+        return result
         
-        result_counts = Counter(corrected_results)
-        most_common = result_counts.most_common(1)[0]
-        best_result = most_common[0]
-        confidence_score = most_common[1]
-        
-        print(f"OCR Results: {result_counts}")
-        print(f"Best result: {best_result} (appeared {confidence_score} times)")
-        
-        # Determine confidence level
-        if confidence_score >= 3:
-            confidence = "high"
-        elif confidence_score >= 2:
-            confidence = "medium"
-        else:
-            confidence = "low"
-        
-        return {
-            "license_plate": best_result,
-            "full_text": full_plate['full_text'] if full_plate['full_text'] else best_result,
-            "confidence": confidence,
-            "area": full_plate['area'],
-            "classification": full_plate['classification'], 
-            "hiragana": full_plate['hiragana'],
-            "number": best_result,
-            "debug_info": f"Found {len(ocr_results)} matches, corrected to: {best_result} ({confidence_score} votes)",
-            "plate_parts": {
-                "area": full_plate['area'],           # 地名 (例: 東京)
-                "classification": full_plate['classification'], # 分類 (例: 330)
-                "hiragana": full_plate['hiragana'],   # ひらがな (例: め)
-                "number": best_result                 # 番号 (例: 81-18)
-            }
-        }
-    else:
-        # No results found
-        print("No license plate numbers detected")
-        return {
-            "license_plate": "",
-            "full_text": "認識できませんでした",
-            "confidence": "failed",
-            "message": "画像をもう一度撮影するか、手動で入力してください。撮影時は明るい場所で、ナンバープレート全体が画面に収まるようにしてください。"
-        }
+    except Exception as e:
+        print(f"OCR processing error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"OCR処理中にエラーが発生しました: {str(e)}")
 
 @app.get("/api/parking-data", response_model=list[ParkingLogResponse])
 def get_parking_data(db: Session = Depends(get_db)):

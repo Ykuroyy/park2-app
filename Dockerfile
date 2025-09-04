@@ -9,7 +9,8 @@ ENV PYTHONUNBUFFERED 1
 
 # 3. Install System Dependencies
 # - Install Tesseract OCR with Japanese language support
-# - Install required libraries for OpenCV
+# - Install required libraries for OpenCV and EasyOCR
+# - Install git for EasyOCR model downloads
 # - Clean up apt cache to keep the image lightweight
 RUN apt-get update && \
     apt-get install -y \
@@ -18,7 +19,14 @@ RUN apt-get update && \
     tesseract-ocr-eng \
     libgl1 \
     libgomp1 \
-    libglib2.0-0 && \
+    libglib2.0-0 \
+    git \
+    libgthread-2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libfontconfig1 \
+    libice6 && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

@@ -3,9 +3,12 @@ uvicorn[standard]
 python-multipart
 opencv-python-headless
 pytesseract
+easyocr
 Jinja2
 SQLAlchemy
 aiofiles
 psycopg2-binary
 numpy
 Pillow
+torch
+torchvision
