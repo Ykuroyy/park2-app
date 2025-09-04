@@ -48,7 +48,7 @@ class ParkingLogResponse(BaseModel):
     check_in: datetime.datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # --- FastAPI App Initialization ---
 app = FastAPI(title="Park2 App")
