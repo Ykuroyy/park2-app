@@ -86,7 +86,8 @@ async def read_root(request: Request):
 @app.post("/upload-image/")
 async def ocr_from_image(file: UploadFile = File(...)):
     """
-    Receives an image, performs OCR, and returns the recognized text.
+    Receives an image, performs OCR for Japanese license plates.
+    Returns both the 4-digit number and full plate text.
     """
     contents = await file.read()
     np_arr = np.frombuffer(contents, np.uint8)
@@ -95,55 +96,110 @@ async def ocr_from_image(file: UploadFile = File(...)):
     if img is None:
         raise HTTPException(status_code=400, detail="Invalid image file.")
 
+    # Get image dimensions for quality check
+    height, width = img.shape[:2]
+    
+    # Auto-rotate if image is in portrait mode (common with phone cameras)
+    if height > width * 1.5:
+        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        height, width = width, height
+    
+    # Resize if image is too small (improves OCR accuracy)
+    if width < 800:
+        scale = 800 / width
+        new_width = int(width * scale)
+        new_height = int(height * scale)
+        img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_CUBIC)
+    
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    # Enhanced preprocessing for better number recognition
-    # 1. Apply bilateral filter to reduce noise while keeping edges sharp
-    denoised = cv2.bilateralFilter(gray, 11, 17, 17)
+    # Enhanced preprocessing for Japanese license plates
+    # 1. Denoise
+    denoised = cv2.fastNlMeansDenoising(gray, h=10)
     
-    # 2. Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) for better contrast
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    # 2. Enhance contrast
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
     enhanced = clahe.apply(denoised)
     
-    # 3. Apply morphological operations to clean up the image
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
-    morph = cv2.morphologyEx(enhanced, cv2.MORPH_CLOSE, kernel)
+    # 3. Sharpen the image
+    kernel_sharpen = np.array([[-1,-1,-1],
+                                [-1, 9,-1],
+                                [-1,-1,-1]])
+    sharpened = cv2.filter2D(enhanced, -1, kernel_sharpen)
     
-    # 4. Apply Otsu's thresholding for better binarization
-    _, thresh = cv2.threshold(morph, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # 4. Binary threshold
+    _, thresh = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     try:
-        # Improved Tesseract configuration for number recognition
-        # PSM 7: Treat image as single text line (good for license plates)
-        # Whitelist only numbers and common license plate characters
-        custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789'
+        # Multiple OCR attempts with different configurations
+        results = []
         
-        # Try multiple preprocessing approaches
-        text = pytesseract.image_to_string(thresh, config=custom_config)
-        cleaned_text = "".join(filter(str.isdigit, text))
+        # Attempt 1: Focus on 4-digit number (main identifier)
+        config_numbers = r'--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789'
+        text_numbers = pytesseract.image_to_string(thresh, config=config_numbers)
+        numbers_only = "".join(filter(str.isdigit, text_numbers))
         
-        if len(cleaned_text) < 4:
-            # Try with inverted image if first attempt gives poor results
+        # Extract 4-digit sequence
+        import re
+        four_digit_match = re.search(r'\d{4}', numbers_only)
+        four_digit = four_digit_match.group() if four_digit_match else ""
+        
+        # Attempt 2: Try with inverted image if needed
+        if len(four_digit) < 4:
             thresh_inv = cv2.bitwise_not(thresh)
-            text = pytesseract.image_to_string(thresh_inv, config=custom_config)
-            cleaned_text_inv = "".join(filter(str.isdigit, text))
-            if len(cleaned_text_inv) > len(cleaned_text):
-                cleaned_text = cleaned_text_inv
+            text_inv = pytesseract.image_to_string(thresh_inv, config=config_numbers)
+            numbers_inv = "".join(filter(str.isdigit, text_inv))
+            four_digit_match_inv = re.search(r'\d{4}', numbers_inv)
+            if four_digit_match_inv:
+                four_digit = four_digit_match_inv.group()
         
-        if len(cleaned_text) < 4:
-            # Fallback: try with less strict config
-            custom_config_fallback = r'--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789-'
-            text = pytesseract.image_to_string(enhanced, config=custom_config_fallback)
-            cleaned_text_fallback = "".join(filter(str.isdigit, text))
-            if len(cleaned_text_fallback) > len(cleaned_text):
-                cleaned_text = cleaned_text_fallback
+        # Attempt 3: Try Japanese + English for full plate (optional)
+        # Note: This requires tesseract-ocr-jpn package
+        full_text = ""
+        try:
+            config_full = r'--oem 3 --psm 6'
+            # Try Japanese + English
+            full_text = pytesseract.image_to_string(thresh, config=config_full, lang='jpn+eng')
+            full_text = full_text.strip().replace('\n', ' ')
+        except:
+            # If Japanese not available, use English only
+            full_text = pytesseract.image_to_string(thresh, config=config_full, lang='eng')
+            full_text = full_text.strip().replace('\n', ' ')
+        
+        # Log for debugging
+        print(f"OCR Debug - Numbers found: {numbers_only}, 4-digit: {four_digit}, Full: {full_text}")
+        
+        # Return result with fallback message
+        if four_digit:
+            return {
+                "license_plate": four_digit,
+                "full_text": full_text if full_text else four_digit,
+                "confidence": "high" if len(four_digit) == 4 else "low"
+            }
+        elif numbers_only:
+            return {
+                "license_plate": numbers_only[:4],  # Take first 4 digits
+                "full_text": full_text if full_text else numbers_only,
+                "confidence": "low"
+            }
+        else:
+            return {
+                "license_plate": "",
+                "full_text": full_text if full_text else "認識できませんでした",
+                "confidence": "failed",
+                "message": "画像をもう一度撮影するか、手動で入力してください"
+            }
 
     except pytesseract.TesseractNotFoundError:
         raise HTTPException(status_code=500, detail="Tesseract is not installed or not in your PATH.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred during OCR: {str(e)}")
-
-    return {"license_plate": cleaned_text}
+        print(f"OCR Error: {str(e)}")
+        return {
+            "license_plate": "",
+            "full_text": "エラーが発生しました",
+            "confidence": "error",
+            "message": f"エラー: {str(e)}"
+        }
 
 @app.get("/api/parking-data", response_model=list[ParkingLogResponse])
 def get_parking_data(db: Session = Depends(get_db)):

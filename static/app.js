@@ -41,10 +41,28 @@ document.addEventListener('DOMContentLoaded', function () {
                 throw new Error(result.error);
             }
 
-            if (result.license_plate) {
+            if (result.license_plate && result.confidence !== 'failed') {
                 licensePlateInput.value = result.license_plate;
+                
+                // Show confidence level and confirm if low
+                if (result.confidence === 'low') {
+                    if (confirm(`認識結果: ${result.license_plate}\nこの番号で正しいですか？\n（違う場合は「キャンセル」を押して手動で修正してください）`)) {
+                        // Auto submit check-in
+                        checkinForm.dispatchEvent(new Event('submit'));
+                    } else {
+                        // Focus on input for manual correction
+                        licensePlateInput.focus();
+                        licensePlateInput.select();
+                    }
+                } else if (result.confidence === 'high') {
+                    // High confidence - show success and auto submit
+                    showSuccess(`認識成功: ${result.license_plate}`);
+                    checkinForm.dispatchEvent(new Event('submit'));
+                }
             } else {
-                showError('ナンバープレートを認識できませんでした。');
+                // OCR failed - prompt for manual input
+                showError(result.message || 'ナンバープレートを認識できませんでした。手動で入力してください。');
+                licensePlateInput.focus();
             }
 
         } catch (error) {

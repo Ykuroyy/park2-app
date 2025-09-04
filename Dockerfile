@@ -8,10 +8,16 @@ ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
 
 # 3. Install System Dependencies
-# - Install Tesseract OCR, which is required for pytesseract
+# - Install Tesseract OCR with Japanese language support
+# - Install required libraries for OpenCV
 # - Clean up apt cache to keep the image lightweight
 RUN apt-get update && \
-    apt-get install -y tesseract-ocr && \
+    apt-get install -y \
+    tesseract-ocr \
+    tesseract-ocr-jpn \
+    tesseract-ocr-eng \
+    libgl1-mesa-glx \
+    libglib2.0-0 && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
