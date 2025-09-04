@@ -2,3 +2,155 @@
 body {
     background-color: #f8f9fa;
 }
+
+/* Camera Interface Styles */
+.camera-container {
+    position: relative;
+    width: 100%;
+    max-width: 600px;
+    margin: 0 auto;
+    background: #000;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+#camera-preview, #capture-canvas {
+    width: 100%;
+    height: auto;
+    display: block;
+}
+
+/* Guide Frame Overlay */
+.guide-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    pointer-events: none;
+    z-index: 10;
+}
+
+.guide-box {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 85%;
+    max-width: 400px;
+    height: 120px;
+    border: 3px solid #00ff00;
+    border-radius: 8px;
+    box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
+}
+
+/* Corner indicators */
+.corner {
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    border-style: solid;
+    border-color: #00ff00;
+}
+
+.corner.top-left {
+    top: -3px;
+    left: -3px;
+    border-width: 5px 0 0 5px;
+    border-radius: 8px 0 0 0;
+}
+
+.corner.top-right {
+    top: -3px;
+    right: -3px;
+    border-width: 5px 5px 0 0;
+    border-radius: 0 8px 0 0;
+}
+
+.corner.bottom-left {
+    bottom: -3px;
+    left: -3px;
+    border-width: 0 0 5px 5px;
+    border-radius: 0 0 0 8px;
+}
+
+.corner.bottom-right {
+    bottom: -3px;
+    right: -3px;
+    border-width: 0 5px 5px 0;
+    border-radius: 0 0 8px 0;
+}
+
+.guide-text {
+    position: absolute;
+    bottom: -40px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: #00ff00;
+    font-size: 14px;
+    font-weight: bold;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+    white-space: nowrap;
+    margin: 0;
+    padding: 5px 10px;
+    background: rgba(0, 0, 0, 0.7);
+    border-radius: 4px;
+}
+
+/* Camera control buttons */
+#camera-controls button {
+    margin: 0 5px;
+}
+
+#capture-btn {
+    background-color: #28a745;
+    border-color: #28a745;
+    font-size: 1.2rem;
+    padding: 10px 30px;
+}
+
+#capture-btn:hover {
+    background-color: #218838;
+    border-color: #1e7e34;
+}
+
+#retake-btn {
+    background-color: #ffc107;
+    border-color: #ffc107;
+    color: #212529;
+}
+
+#retake-btn:hover {
+    background-color: #e0a800;
+    border-color: #d39e00;
+}
+
+#use-photo-btn {
+    background-color: #007bff;
+    border-color: #007bff;
+}
+
+#use-photo-btn:hover {
+    background-color: #0056b3;
+    border-color: #004085;
+}
+
+/* Responsive adjustments */
+@media (max-width: 576px) {
+    .guide-box {
+        width: 90%;
+        height: 100px;
+    }
+    
+    #camera-controls button {
+        margin: 5px 2px;
+        font-size: 0.9rem;
+        padding: 8px 15px;
+    }
+    
+    #capture-btn {
+        display: block;
+        width: 90%;
+        margin: 10px auto;
+    }
+}
