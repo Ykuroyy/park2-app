@@ -28,5 +28,5 @@ COPY . .
 
 # 7. Expose Port and Define Startup Command
 # Railway provides the PORT environment variable
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "$PORT"]
+CMD uvicorn main:app --host 0.0.0.0 --port $PORT
 
