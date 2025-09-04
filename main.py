@@ -89,18 +89,118 @@ async def ocr_from_image(file: UploadFile = File(...)):
         if img is None:
             raise HTTPException(status_code=400, detail="Invalid image file.")
         
+        # Auto-rotate if portrait mode
+        height, width = img.shape[:2]
+        if height > width * 1.5:
+            img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        
+        # High resolution scaling for better OCR
+        target_width = 1600
+        if width < target_width:
+            scale = target_width / width
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_CUBIC)
+        
         # Convert to grayscale
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # Simple OCR
+        # Advanced preprocessing methods
+        def preprocess_clahe_sharp(img):
+            # CLAHE for contrast enhancement
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+            enhanced = clahe.apply(img)
+            
+            # Unsharp masking for better edge definition
+            gaussian = cv2.GaussianBlur(enhanced, (0, 0), 1.5)
+            sharpened = cv2.addWeighted(enhanced, 2.0, gaussian, -1.0, 0)
+            
+            return sharpened
+        
+        def preprocess_bilateral_morph(img):
+            # Bilateral filter for noise reduction while preserving edges
+            bilateral = cv2.bilateralFilter(img, 11, 80, 80)
+            
+            # Morphological operations to clean up
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2,2))
+            morph = cv2.morphologyEx(bilateral, cv2.MORPH_CLOSE, kernel)
+            morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
+            
+            return morph
+        
+        def preprocess_denoise_enhance(img):
+            # Advanced denoising
+            denoised = cv2.fastNlMeansDenoising(img, h=10)
+            
+            # Custom sharpening kernel
+            kernel_sharpen = np.array([[-1,-1,-1],
+                                     [-1, 9,-1], 
+                                     [-1,-1,-1]])
+            sharpened = cv2.filter2D(denoised, -1, kernel_sharpen)
+            
+            return sharpened
+        
+        # Process with multiple preprocessing methods
+        preprocessing_methods = [
+            ("original", gray),
+            ("clahe_sharp", preprocess_clahe_sharp(gray)),
+            ("bilateral_morph", preprocess_bilateral_morph(gray)),
+            ("denoise_enhance", preprocess_denoise_enhance(gray))
+        ]
+        
+        all_results = []
+        
+        for method_name, processed_img in preprocessing_methods:
+            # Try different binarization methods
+            binary_methods = []
+            
+            # Otsu thresholding
+            _, otsu = cv2.threshold(processed_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            binary_methods.append(("otsu", otsu))
+            
+            # Adaptive thresholding
+            adaptive = cv2.adaptiveThreshold(processed_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                           cv2.THRESH_BINARY, 11, 2)
+            binary_methods.append(("adaptive", adaptive))
+            
+            for binary_name, binary_img in binary_methods:
+                # Try normal and inverted
+                for invert in [False, True]:
+                    test_img = cv2.bitwise_not(binary_img) if invert else binary_img
+                    
+                    try:
+                        text = pytesseract.image_to_string(test_img, 
+                            config='--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789-')
+                        if text.strip():
+                            all_results.append({
+                                'text': text.strip(),
+                                'method': f"{method_name}_{binary_name}_inv{invert}"
+                            })
+                    except:
+                        continue
+        
+        # Enhanced OCR processing
         try:
-            text = pytesseract.image_to_string(gray, config='--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789-')
+            # Collect all detected numbers from different methods
+            all_numbers = []
             
-            # Extract numbers
-            numbers = re.findall(r'\d{4}|\d{2}-\d{2}', text)
+            for result in all_results:
+                text = result['text']
+                # Extract number patterns
+                numbers = re.findall(r'\d{4}|\d{2}-\d{2}', text)
+                for num in numbers:
+                    all_numbers.append(num)
+                    print(f"Found '{num}' using {result['method']}")
             
-            if numbers:
-                best_number = numbers[0]
+            # Choose the best result (most common or first valid)
+            if all_numbers:
+                # Use the most common result or first one
+                from collections import Counter
+                counter = Counter(all_numbers)
+                most_common = counter.most_common(1)[0]
+                best_number = most_common[0]
+                confidence_level = "high" if most_common[1] > 1 else "medium"
+                
                 # Format as XX-XX
                 if len(best_number) == 4:
                     best_number = f"{best_number[:2]}-{best_number[2:]}"
@@ -108,7 +208,8 @@ async def ocr_from_image(file: UploadFile = File(...)):
                 return {
                     "license_plate": best_number,
                     "full_text": best_number,
-                    "confidence": "medium",
+                    "confidence": confidence_level,
+                    "debug_info": f"Found {len(all_numbers)} results, best: {best_number} (appeared {most_common[1]} times)",
                     "area": "",
                     "classification": "",
                     "hiragana": "",
